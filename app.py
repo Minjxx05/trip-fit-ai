@@ -526,3 +526,4 @@ if btn:
 
     moodboard_images(dest_card.get("destination", destination_input), style_pref)
     moodboard_links(dest_card.get("destination", destination_input), style_pref)
+
