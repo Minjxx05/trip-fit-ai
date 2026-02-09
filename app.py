@@ -55,6 +55,7 @@ STYLE_THEME = {
 }
 
 def inject_css(theme: dict):
+    # 버튼/카드/뱃지/칩/포커스 링 등 톤을 통일
     st.markdown(
         f"""
 <style>
@@ -65,6 +66,7 @@ def inject_css(theme: dict):
   --cardbg: {theme["card"]};
 }}
 
+/* 메인 CTA 버튼 */
 div.stButton > button {{
   background: linear-gradient(135deg, var(--g1) 0%, var(--g2) 100%) !important;
   color: white !important;
@@ -83,6 +85,7 @@ div.stButton > button:active {{
   transform: scale(0.98);
 }}
 
+/* 카드 UI */
 .trip-card {{
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 18px;
@@ -110,6 +113,10 @@ div.stButton > button:active {{
   border: 1px solid rgba(255,255,255,0.14);
   margin: 4px 6px 0 0;
   font-size: 12px;
+}}
+/* 포커스 링: 테마 악센트 */
+div[data-baseweb="select"] *:focus {{
+  box-shadow: 0 0 0 2px var(--accent) !important;
 }}
 </style>
         """,
@@ -189,6 +196,7 @@ def build_calendar_rows(start_date: date, days: int, plans: list[dict]) -> list[
 # =============================
 def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> str:
     calendar_json = json.dumps(calendar_rows, ensure_ascii=False)
+
     return f"""
 너는 여행 전문 패션 코디네이터다.
 여행지 날씨와 사용자의 스타일 취향, 그리고 '캘린더 형식 일정'에 맞춰
@@ -215,6 +223,36 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
 - 코디에는 반드시: 핵심 아이템, 추천 이유(날씨+일정 근거), 캐리어 체크리스트 포함
 - 브랜드/가격 언급 금지(품목 중심)
 - 한국어
+
+{{
+  "destination_card": {{
+    "destination": "도시/국가",
+    "dday": "D-3",
+    "weather_one_liner": "한 줄 날씨"
+  }},
+  "calendar_outfits": [
+    {{
+      "date": "YYYY-MM-DD",
+      "day_summary": "그날 일정 핵심 요약(1줄)",
+      "day_outfits": [
+        {{
+          "title": "코디 이름",
+          "covers_slots": ["오전","오후"],
+          "items": {{
+            "top": ["..."],
+            "bottom": ["..."],
+            "outer": ["..."],
+            "shoes": ["..."],
+            "accessories": ["..."]
+          }},
+          "key_items": ["핵심 3~5개"],
+          "why_recommended": "추천 이유(2~4문장)",
+          "packing_checklist": ["체크리스트 8~14개"]
+        }}
+      ]
+    }}
+  ]
+}}
 """.strip()
 
 def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> dict:
@@ -274,11 +312,13 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
 def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> tuple[dict, bool]:
     if not openai_key:
         return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
+
     try:
         client = OpenAI(api_key=openai_key)
+        prompt = build_prompt(user, weather, start_date, days, calendar_rows)
         resp = client.responses.create(
             model="gpt-4o-mini",
-            input=build_prompt(user, weather, start_date, days, calendar_rows),
+            input=prompt,
             temperature=0.6,
         )
         text = (resp.output_text or "").strip()
@@ -292,57 +332,10 @@ def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherIn
             if s != -1 and e != -1 and e > s:
                 return json.loads(text[s:e+1]), False
             raise
+
     except Exception:
+        # ✅ 에러코드/상세는 화면에 절대 노출하지 않음
         return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
-
-
-# =============================
-# Moodboard (more reliable)
-# - resolve redirects first, then show final URL
-# =============================
-@st.cache_data(ttl=3600)
-def resolve_image_url(query: str, sig: int) -> str | None:
-    """
-    Unsplash Source는 302 redirect를 주는 경우가 많아서
-    최종 이미지 URL을 resolve한 뒤 st.image에 넣으면 성공률이 올라감.
-    """
-    try:
-        src = f"https://source.unsplash.com/900x1200/?{requests.utils.quote(query)}&sig={sig}"
-        r = requests.get(src, timeout=12, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200 and r.url:
-            return r.url
-        return None
-    except Exception:
-        return None
-
-def moodboard_images(destination: str, style_pref: str):
-    st.subheader("🖼️ 무드보드 (레퍼런스)")
-    query = f"{destination} {style_pref} outfit street"
-    cols = st.columns(3)
-
-    urls = []
-    for i in range(6):
-        final_url = resolve_image_url(query, i)
-        urls.append(final_url)
-
-    any_ok = any(u for u in urls)
-    if not any_ok:
-        st.info("이미지 로드가 어려워서 링크로 보여줄게요 🙂")
-        return
-
-    for i, u in enumerate(urls):
-        with cols[i % 3]:
-            if u:
-                st.image(u, use_container_width=True)
-            else:
-                st.write("—")
-
-    st.caption("레퍼런스 이미지(공개 이미지 기반).")
-
-def moodboard_links(destination: str, style_pref: str):
-    q = f"{destination} {style_pref} ootd"
-    st.link_button("🔎 Google 이미지", f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(q)}")
-    st.link_button("📌 Pinterest", f"https://www.pinterest.com/search/pins/?q={requests.utils.quote(q)}")
 
 
 # =============================
@@ -391,6 +384,21 @@ def render_outfit(outfit: dict, key_prefix: str):
     for i, item in enumerate(outfit.get("packing_checklist", [])[:18]):
         st.checkbox(item, key=f"{key_prefix}_{i}")
 
+def moodboard_images(destination: str, style_pref: str):
+    st.subheader("🖼️ 무드보드 (레퍼런스)")
+    q = f"{destination} {style_pref} outfit street"
+    cols = st.columns(3)
+    for i in range(6):
+        url = f"https://source.unsplash.com/600x800/?{requests.utils.quote(q)}&sig={i}"
+        with cols[i % 3]:
+            st.image(url, use_container_width=True)
+    st.caption("레퍼런스 이미지(공개 이미지 기반).")
+
+def moodboard_links(destination: str, style_pref: str):
+    q = f"{destination} {style_pref} ootd"
+    st.link_button("🔎 Google 이미지", f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(q)}")
+    st.link_button("📌 Pinterest", f"https://www.pinterest.com/search/pins/?q={requests.utils.quote(q)}")
+
 
 # =============================
 # App
@@ -418,7 +426,7 @@ with c2:
     age_group = st.selectbox("🎂 나이대", ["10대", "20대", "30대", "40대", "50대+"])
     style_pref = st.selectbox("👗 스타일", STYLE_OPTIONS)
 
-# 테마 적용 (선택값 기반)
+# ✅ 스타일 선택값으로 테마 적용 (리런 때마다 자동 반영)
 inject_css(STYLE_THEME.get(style_pref, STYLE_THEME["러블리"]))
 
 user = {
@@ -457,6 +465,7 @@ if btn:
         st.stop()
 
     with st.spinner("✨ 코디 준비 중..."):
+        # 1) 지오코딩
         geo = None
         try:
             geo = geocode_city(destination_input.strip())
@@ -472,6 +481,7 @@ if btn:
         lat = float(geo["latitude"])
         lon = float(geo["longitude"])
 
+        # 2) 날씨
         try:
             wx = fetch_weather_one_liner(lat, lon, start_date)
         except Exception:
@@ -479,17 +489,20 @@ if btn:
 
         weather = WeatherInfo(city=city, country=country, lat=lat, lon=lon, summary=wx)
 
+        # 3) AI / fallback
         if use_ai:
             result, used_fallback = generate_with_ai_or_fallback(openai_key, user, weather, start_date, days, calendar_rows)
         else:
             result, used_fallback = mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
 
+    # Render
     dest_card = result.get("destination_card", {})
     dest_card.setdefault("destination", f"{city}, {country}".strip().strip(","))
     dest_card.setdefault("dday", dday_string(start_date))
     dest_card.setdefault("weather_one_liner", wx)
     render_destination_card(dest_card)
 
+    # ✅ 에러코드 노출 없이 짧게만
     if used_fallback:
         st.info("🙂 샘플 코디로 보여줄게요!")
 
