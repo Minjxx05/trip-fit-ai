@@ -108,6 +108,11 @@ def build_calendar_rows(start_date: date, days: int, plans: list[dict]) -> list[
 # =============================
 # Prompt / Mock / AI
 # =============================
+STYLE_OPTIONS = [
+    "미니멀", "빈티지", "스트릿", "캐주얼",
+    "클래식", "러블리", "고프코어", "시티보이/시티걸"
+]
+
 def build_prompt(user, weather, start_date, days, calendar_rows):
     return f"""
 너는 여행 전문 패션 코디네이터다.
@@ -140,20 +145,20 @@ def mock_generate_calendar(user, weather, start_date, days, calendar_rows):
     for d, rows in by_date.items():
         calendar_outfits.append({
             "date": d,
-            "day_summary": "일정에 맞춘 데일리 코디",
+            "day_summary": f"{user['style_pref']} 무드의 데일리 코디",
             "day_outfits": [
                 {
                     "title": f"👟 {user['style_pref']} 데이룩",
                     "covers_slots": ["오전", "오후"],
                     "items": {
-                        "top": ["베이직 상의"],
-                        "bottom": ["편한 팬츠"],
-                        "outer": ["가벼운 자켓"],
+                        "top": [f"{user['style_pref']} 상의"],
+                        "bottom": ["편한 팬츠/스커트"],
+                        "outer": ["가벼운 아우터"],
                         "shoes": ["스니커즈"],
                         "accessories": ["크로스백"],
                     },
-                    "key_items": ["스니커즈", "자켓"],
-                    "why_recommended": "도보 이동과 사진 촬영에 무리 없는 구성입니다.",
+                    "key_items": ["스니커즈", "아우터"],
+                    "why_recommended": "일정 전반을 커버할 수 있는 안정적인 데일리 코디입니다.",
                     "packing_checklist": ["양말", "보조배터리", "선크림"],
                 }
             ],
@@ -188,7 +193,6 @@ def generate_with_ai_or_fallback(openai_key, user, weather, start_date, days, ca
 def inject_css():
     st.markdown("""
 <style>
-/* 메인 CTA 버튼 */
 div.stButton > button {
     background: linear-gradient(135deg, #ff6cab 0%, #7366ff 100%);
     color: white;
@@ -197,14 +201,10 @@ div.stButton > button {
     font-size: 1.05rem;
     font-weight: 700;
     border: none;
-    transition: all 0.2s ease;
 }
 div.stButton > button:hover {
-    transform: translateY(-2px);
     box-shadow: 0 8px 20px rgba(115,102,255,0.35);
-}
-div.stButton > button:active {
-    transform: scale(0.98);
+    transform: translateY(-2px);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -226,9 +226,9 @@ with c1:
     days = st.slider("⏳ 여행 기간", 1, 7, 3)
 
 with c2:
-    gender = st.selectbox("🙋 성별", ["여성", "남성"])
-    age_group = st.selectbox("🎂 나이대", ["20대", "30대", "40대"])
-    style_pref = st.selectbox("👗 스타일", ["미니멀", "캐주얼", "스트릿"])
+    gender = st.selectbox("🙋 성별", ["여성", "남성", "기타/선호없음"])
+    age_group = st.selectbox("🎂 나이대", ["10대", "20대", "30대", "40대", "50대+"])
+    style_pref = st.selectbox("👗 스타일", STYLE_OPTIONS)
 
 user = {
     "gender": gender,
@@ -239,7 +239,7 @@ user = {
 
 st.subheader("🗓️ 일정")
 plans = []
-tabs = st.tabs([(start_date + relativedelta(days=i)).strftime("%m/%d") for i in range(days)])
+tabs = st.tabs([(start_date + relativedelta(days=i)).strftime("📅 %m/%d") for i in range(days)])
 for i, tab in enumerate(tabs):
     d = start_date + relativedelta(days=i)
     with tab:
