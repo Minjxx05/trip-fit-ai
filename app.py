@@ -55,7 +55,6 @@ STYLE_THEME = {
 }
 
 def inject_css(theme: dict):
-    # 버튼/카드/뱃지/칩/포커스 링 등 톤을 통일
     st.markdown(
         f"""
 <style>
@@ -66,7 +65,6 @@ def inject_css(theme: dict):
   --cardbg: {theme["card"]};
 }}
 
-/* 메인 CTA 버튼 */
 div.stButton > button {{
   background: linear-gradient(135deg, var(--g1) 0%, var(--g2) 100%) !important;
   color: white !important;
@@ -85,7 +83,6 @@ div.stButton > button:active {{
   transform: scale(0.98);
 }}
 
-/* 카드 UI */
 .trip-card {{
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 18px;
@@ -113,10 +110,6 @@ div.stButton > button:active {{
   border: 1px solid rgba(255,255,255,0.14);
   margin: 4px 6px 0 0;
   font-size: 12px;
-}}
-/* 포커스 링: 테마 악센트 */
-div[data-baseweb="select"] *:focus {{
-  box-shadow: 0 0 0 2px var(--accent) !important;
 }}
 </style>
         """,
@@ -196,7 +189,6 @@ def build_calendar_rows(start_date: date, days: int, plans: list[dict]) -> list[
 # =============================
 def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> str:
     calendar_json = json.dumps(calendar_rows, ensure_ascii=False)
-
     return f"""
 너는 여행 전문 패션 코디네이터다.
 여행지 날씨와 사용자의 스타일 취향, 그리고 '캘린더 형식 일정'에 맞춰
@@ -312,13 +304,11 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
 def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> tuple[dict, bool]:
     if not openai_key:
         return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
-
     try:
         client = OpenAI(api_key=openai_key)
-        prompt = build_prompt(user, weather, start_date, days, calendar_rows)
         resp = client.responses.create(
             model="gpt-4o-mini",
-            input=prompt,
+            input=build_prompt(user, weather, start_date, days, calendar_rows),
             temperature=0.6,
         )
         text = (resp.output_text or "").strip()
@@ -336,6 +326,20 @@ def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherIn
     except Exception:
         # ✅ 에러코드/상세는 화면에 절대 노출하지 않음
         return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
+
+
+# =============================
+# Links (Google/Pinterest + Shopping search links)
+# =============================
+def inspiration_links(destination: str, style_pref: str):
+    st.subheader("🔎 참고 링크")
+    q = f"{destination} {style_pref} ootd"
+    st.link_button("🖼️ Google 이미지", f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(q)}")
+    st.link_button("📌 Pinterest", f"https://www.pinterest.com/search/pins/?q={requests.utils.quote(q)}")
+
+def shopping_links(item_keyword: str):
+    st.link_button("🛍️ 무신사 검색", f"https://www.musinsa.com/search/musinsa/integration?q={requests.utils.quote(item_keyword)}")
+    st.link_button("🛒 에이블리 검색", f"https://m.a-bly.com/search?query={requests.utils.quote(item_keyword)}")
 
 
 # =============================
@@ -384,20 +388,18 @@ def render_outfit(outfit: dict, key_prefix: str):
     for i, item in enumerate(outfit.get("packing_checklist", [])[:18]):
         st.checkbox(item, key=f"{key_prefix}_{i}")
 
-def moodboard_images(destination: str, style_pref: str):
-    st.subheader("🖼️ 무드보드 (레퍼런스)")
-    q = f"{destination} {style_pref} outfit street"
-    cols = st.columns(3)
-    for i in range(6):
-        url = f"https://source.unsplash.com/600x800/?{requests.utils.quote(q)}&sig={i}"
-        with cols[i % 3]:
-            st.image(url, use_container_width=True)
-    st.caption("레퍼런스 이미지(공개 이미지 기반).")
-
-def moodboard_links(destination: str, style_pref: str):
-    q = f"{destination} {style_pref} ootd"
-    st.link_button("🔎 Google 이미지", f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(q)}")
-    st.link_button("📌 Pinterest", f"https://www.pinterest.com/search/pins/?q={requests.utils.quote(q)}")
+    # 쇼핑 링크(키워드 기반 검색)
+    st.write("🛒 비슷한 상품 찾기")
+    key_items = outfit.get("key_items", [])[:3]
+    if not key_items:
+        st.caption("핵심 아이템이 없어요.")
+    for kw in key_items:
+        st.markdown(f"**{kw}**")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.link_button("🛍️ 무신사", f"https://www.musinsa.com/search/musinsa/integration?q={requests.utils.quote(kw)}")
+        with c2:
+            st.link_button("🛒 에이블리", f"https://m.a-bly.com/search?query={requests.utils.quote(kw)}")
 
 
 # =============================
@@ -426,7 +428,7 @@ with c2:
     age_group = st.selectbox("🎂 나이대", ["10대", "20대", "30대", "40대", "50대+"])
     style_pref = st.selectbox("👗 스타일", STYLE_OPTIONS)
 
-# ✅ 스타일 선택값으로 테마 적용 (리런 때마다 자동 반영)
+# 스타일 선택값으로 테마 적용
 inject_css(STYLE_THEME.get(style_pref, STYLE_THEME["러블리"]))
 
 user = {
@@ -502,7 +504,6 @@ if btn:
     dest_card.setdefault("weather_one_liner", wx)
     render_destination_card(dest_card)
 
-    # ✅ 에러코드 노출 없이 짧게만
     if used_fallback:
         st.info("🙂 샘플 코디로 보여줄게요!")
 
@@ -524,5 +525,5 @@ if btn:
                 st.divider()
                 render_outfit(outfit, key_prefix=f"{day['date']}_{k}")
 
-    moodboard_images(dest_card.get("destination", destination_input), style_pref)
-    moodboard_links(dest_card.get("destination", destination_input), style_pref)
+    st.divider()
+    inspiration_links(dest_card.get("destination", destination_input), style_pref)
