@@ -166,29 +166,41 @@ def fetch_weather_one_liner(lat: float, lon: float, target: date) -> str:
 
 
 # =============================
-# Calendar itinerary
+# Calendar itinerary (now includes per-day style)
 # =============================
 SLOTS = ["오전", "오후", "저녁"]
 
-def build_calendar_rows(start_date: date, days: int, plans: list[dict]) -> list[dict]:
+def build_calendar_rows(start_date: date, days: int, plans: list[dict], day_styles: dict) -> list[dict]:
+    """
+    day_styles: { "YYYY-MM-DD": "미니멀", ... }
+    """
     rows = []
     for i in range(days):
         d = start_date + relativedelta(days=i)
+        dkey = d.isoformat()
+        style = day_styles.get(dkey, "러블리")
         for slot in SLOTS:
             plan_text = ""
             for p in plans:
-                if p["date"] == d.isoformat() and p["slot"] == slot:
+                if p["date"] == dkey and p["slot"] == slot:
                     plan_text = (p["plan"] or "").strip()
                     break
-            rows.append({"날짜": d.isoformat(), "시간대": slot, "일정": plan_text if plan_text else "—"})
+            rows.append({
+                "날짜": dkey,
+                "시간대": slot,
+                "일정": plan_text if plan_text else "—",
+                "스타일": style
+            })
     return rows
 
 
 # =============================
 # AI Prompt / Mock / Fallback
 # =============================
-def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> str:
+def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict], day_styles: dict) -> str:
     calendar_json = json.dumps(calendar_rows, ensure_ascii=False)
+    styles_json = json.dumps(day_styles, ensure_ascii=False)
+
     return f"""
 너는 여행 전문 패션 코디네이터다.
 여행지 날씨와 사용자의 스타일 취향, 그리고 '캘린더 형식 일정'에 맞춰
@@ -197,7 +209,6 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
 [사용자]
 - 성별: {user["gender"]}
 - 나이대: {user["age_group"]}
-- 스타일 성향: {user["style_pref"]}
 - 계절: {user["season"]}
 
 [여행]
@@ -206,11 +217,15 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
 - 기간: {days}일
 - 날씨 요약(시작일 기준): {weather.summary}
 
+[날짜별 스타일(JSON)]
+{styles_json}
+
 [일정 캘린더(JSON)]
 {calendar_json}
 
 [출력 규칙: 반드시 JSON만]
 - 날짜별로 코디를 묶어서 제공
+- 각 날짜는 그날 스타일을 반드시 반영 (styles_json 기준)
 - 각 날짜마다 day_outfits는 최소 1개, 최대 2개(오전/오후/저녁 일정 커버)
 - 코디에는 반드시: 핵심 아이템, 추천 이유(날씨+일정 근거), 캐리어 체크리스트 포함
 - 브랜드/가격 언급 금지(품목 중심)
@@ -225,6 +240,7 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
   "calendar_outfits": [
     {{
       "date": "YYYY-MM-DD",
+      "day_style": "그날 스타일",
       "day_summary": "그날 일정 핵심 요약(1줄)",
       "day_outfits": [
         {{
@@ -247,7 +263,7 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
 }}
 """.strip()
 
-def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> dict:
+def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict], day_styles: dict) -> dict:
     dest = f"{weather.city}, {weather.country}".strip().strip(",")
     dest_card = {
         "destination": dest,
@@ -255,32 +271,35 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
         "weather_one_liner": weather.summary,
     }
 
+    # 날짜별 일정 요약
     by_date = {}
     for r in calendar_rows:
         by_date.setdefault(r["날짜"], []).append(r)
 
     calendar_outfits = []
     for d, rows in by_date.items():
+        style = day_styles.get(d, "러블리")
         plans = [f'{x["시간대"]}:{x["일정"]}' for x in rows if x["일정"] != "—"]
         summary = " / ".join(plans) if plans else "가벼운 자유 일정"
 
         calendar_outfits.append({
             "date": d,
+            "day_style": style,
             "day_summary": summary[:80] + ("…" if len(summary) > 80 else ""),
             "day_outfits": [
                 {
-                    "title": f"👟 {user['style_pref']} 데이룩",
+                    "title": f"👟 {style} 데이룩",
                     "covers_slots": ["오전", "오후"],
                     "items": {
-                        "top": ["베이직 상의", f"{user['style_pref']} 포인트 톱"],
+                        "top": ["베이직 상의", f"{style} 포인트 톱"],
                         "bottom": ["편한 팬츠/스커트"],
                         "outer": ["가벼운 자켓/가디건"],
                         "shoes": ["스니커즈(도보 최적)"],
                         "accessories": ["크로스백", "선글라스/모자"],
                     },
                     "key_items": ["편한 신발", "레이어드 아우터", "크로스백"],
-                    "why_recommended": f"{weather.summary} 기준으로 이동/투어에 무리 없게 구성했어요. 사진에는 실루엣이 깔끔하게 나오도록 톤을 정리했습니다.",
-                    "packing_checklist": ["상/하의 여벌", "양말", "보조배터리", "선크림", "물티슈", "우산(선택)", "상비약", "에코백"],
+                    "why_recommended": f"{weather.summary} 기준으로 일정 이동에 무리 없게 구성했어요. {style} 무드가 사진에 잘 보이도록 톤/실루엣을 정리했습니다.",
+                    "packing_checklist": ["상/하의 여벌", "양말", "보조배터리", "선크림", "물티슈", "상비약", "에코백"],
                 },
                 {
                     "title": "🌙 저녁 무드룩",
@@ -293,22 +312,24 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
                         "accessories": ["미니백", "작은 액세서리"],
                     },
                     "key_items": ["단정한 상의", "미니백", "로퍼"],
-                    "why_recommended": "저녁 조명/실내 동선에 맞춰 단정한 소재와 라인을 우선했어요. 과하지 않게 포인트만 주면 사진이 안정적으로 나옵니다.",
-                    "packing_checklist": ["단정 상의", "향/미스트", "립밤", "작은 액세서리", "여분 스타킹/양말"],
+                    "why_recommended": f"{style} 톤을 유지하면서 저녁 조명에 예쁜 소재/라인을 우선했어요.",
+                    "packing_checklist": ["단정 상의", "향/미스트", "립밤", "작은 액세서리", "여분 양말"],
                 }
             ],
         })
 
     return {"destination_card": dest_card, "calendar_outfits": calendar_outfits}
 
-def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> tuple[dict, bool]:
+def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict], day_styles: dict) -> tuple[dict, bool]:
     if not openai_key:
-        return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
+        return mock_generate_calendar(user, weather, start_date, days, calendar_rows, day_styles), True
+
     try:
         client = OpenAI(api_key=openai_key)
+        prompt = build_prompt(user, weather, start_date, days, calendar_rows, day_styles)
         resp = client.responses.create(
             model="gpt-4o-mini",
-            input=build_prompt(user, weather, start_date, days, calendar_rows),
+            input=prompt,
             temperature=0.6,
         )
         text = (resp.output_text or "").strip()
@@ -325,7 +346,7 @@ def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherIn
 
     except Exception:
         # ✅ 에러코드/상세는 화면에 절대 노출하지 않음
-        return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
+        return mock_generate_calendar(user, weather, start_date, days, calendar_rows, day_styles), True
 
 
 # =============================
@@ -337,9 +358,12 @@ def inspiration_links(destination: str, style_pref: str):
     st.link_button("🖼️ Google 이미지", f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(q)}")
     st.link_button("📌 Pinterest", f"https://www.pinterest.com/search/pins/?q={requests.utils.quote(q)}")
 
-def shopping_links(item_keyword: str):
-    st.link_button("🛍️ 무신사 검색", f"https://www.musinsa.com/search/musinsa/integration?q={requests.utils.quote(item_keyword)}")
-    st.link_button("🛒 에이블리 검색", f"https://m.a-bly.com/search?query={requests.utils.quote(item_keyword)}")
+def shopping_links_row(item_keyword: str):
+    c1, c2 = st.columns(2)
+    with c1:
+        st.link_button("🛍️ 무신사", f"https://www.musinsa.com/search/musinsa/integration?q={requests.utils.quote(item_keyword)}")
+    with c2:
+        st.link_button("🛒 에이블리", f"https://m.a-bly.com/search?query={requests.utils.quote(item_keyword)}")
 
 
 # =============================
@@ -388,25 +412,16 @@ def render_outfit(outfit: dict, key_prefix: str):
     for i, item in enumerate(outfit.get("packing_checklist", [])[:18]):
         st.checkbox(item, key=f"{key_prefix}_{i}")
 
-    # 쇼핑 링크(키워드 기반 검색)
     st.write("🛒 비슷한 상품 찾기")
-    key_items = outfit.get("key_items", [])[:3]
-    if not key_items:
-        st.caption("핵심 아이템이 없어요.")
-    for kw in key_items:
+    for kw in outfit.get("key_items", [])[:3]:
         st.markdown(f"**{kw}**")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.link_button("🛍️ 무신사", f"https://www.musinsa.com/search/musinsa/integration?q={requests.utils.quote(kw)}")
-        with c2:
-            st.link_button("🛒 에이블리", f"https://m.a-bly.com/search?query={requests.utils.quote(kw)}")
+        shopping_links_row(kw)
 
 
 # =============================
 # App
 # =============================
 st.set_page_config(page_title="Tripfit", page_icon="🧳", layout="wide")
-
 st.title("🧳 Tripfit ✨")
 
 with st.sidebar:
@@ -426,37 +441,58 @@ with c1:
 with c2:
     gender = st.selectbox("🙋 성별", ["여성", "남성", "기타/선호없음"])
     age_group = st.selectbox("🎂 나이대", ["10대", "20대", "30대", "40대", "50대+"])
-    style_pref = st.selectbox("👗 스타일", STYLE_OPTIONS)
 
-# 스타일 선택값으로 테마 적용
-inject_css(STYLE_THEME.get(style_pref, STYLE_THEME["러블리"]))
+# ✅ UI 톤(대표 스타일) 선택: 자동(첫날 스타일) or 고정
+ui_theme_mode = st.selectbox("🎨 UI 톤", ["자동(첫날 스타일)", "고정 선택"])
+if ui_theme_mode == "고정 선택":
+    ui_theme_style = st.selectbox("✨ UI 톤 스타일", STYLE_OPTIONS, index=STYLE_OPTIONS.index("러블리"))
+else:
+    ui_theme_style = None
 
 user = {
     "gender": gender,
     "age_group": age_group,
-    "style_pref": style_pref,
     "season": season_from_month(start_date.month),
 }
 
-st.subheader("🗓️ 일정")
+st.subheader("🗓️ 일정 (날짜별 스타일 선택 가능)")
 plans = []
+day_styles = {}
+
 day_tabs = st.tabs([(start_date + relativedelta(days=i)).strftime("📅 %m/%d") for i in range(days)])
 
 for i, tab in enumerate(day_tabs):
     d = start_date + relativedelta(days=i)
+    dkey = d.isoformat()
+
     with tab:
+        # ✅ 날짜별 스타일 선택
+        day_style = st.selectbox(
+            "👗 오늘의 스타일",
+            STYLE_OPTIONS,
+            key=f"day_style_{dkey}",
+            index=STYLE_OPTIONS.index("러블리"),
+        )
+        day_styles[dkey] = day_style
+
         cols = st.columns(3)
         for j, slot in enumerate(SLOTS):
             with cols[j]:
                 txt = st.text_area(
                     f"🧩 {slot}",
-                    key=f"plan_{d.isoformat()}_{slot}",
+                    key=f"plan_{dkey}_{slot}",
                     height=90,
                     placeholder="예: 박물관 / 카페 / 쇼핑"
                 )
-                plans.append({"date": d.isoformat(), "slot": slot, "plan": txt})
+                plans.append({"date": dkey, "slot": slot, "plan": txt})
 
-calendar_rows = build_calendar_rows(start_date, days, plans)
+# ✅ UI 테마 적용(대표 스타일)
+first_day_key = start_date.isoformat()
+auto_theme_style = day_styles.get(first_day_key, "러블리")
+applied_theme_style = ui_theme_style if (ui_theme_mode == "고정 선택" and ui_theme_style) else auto_theme_style
+inject_css(STYLE_THEME.get(applied_theme_style, STYLE_THEME["러블리"]))
+
+calendar_rows = build_calendar_rows(start_date, days, plans, day_styles)
 
 st.divider()
 btn = st.button("🪄 코디 만들기", use_container_width=True)
@@ -493,9 +529,9 @@ if btn:
 
         # 3) AI / fallback
         if use_ai:
-            result, used_fallback = generate_with_ai_or_fallback(openai_key, user, weather, start_date, days, calendar_rows)
+            result, used_fallback = generate_with_ai_or_fallback(openai_key, user, weather, start_date, days, calendar_rows, day_styles)
         else:
-            result, used_fallback = mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
+            result, used_fallback = mock_generate_calendar(user, weather, start_date, days, calendar_rows, day_styles), True
 
     # Render
     dest_card = result.get("destination_card", {})
@@ -519,6 +555,8 @@ if btn:
     tabs = st.tabs([f"📅 {x['date']}" for x in cal])
     for t, day in zip(tabs, cal):
         with t:
+            day_style = day.get("day_style") or day_styles.get(day["date"], "러블리")
+            st.caption(f"👗 오늘 스타일: {day_style}")
             if day.get("day_summary"):
                 st.caption(day["day_summary"])
             for k, outfit in enumerate(day.get("day_outfits", [])):
@@ -526,4 +564,6 @@ if btn:
                 render_outfit(outfit, key_prefix=f"{day['date']}_{k}")
 
     st.divider()
-    inspiration_links(dest_card.get("destination", destination_input), style_pref)
+    # 참고링크는 "대표 스타일(=첫날 or 고정)"로 보여주되,
+    # 날짜별로 보고 싶으면 여기서 day_styles를 돌려서 날짜마다 링크도 만들 수 있어.
+    inspiration_links(dest_card.get("destination", destination_input), applied_theme_style)
