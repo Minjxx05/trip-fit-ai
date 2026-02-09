@@ -561,7 +561,9 @@ STYLE_VARIATIONS = {
     },
 }
 
+
 def pick_variations(style: str):
+    """Returns (day_variations, night_variations) lists. Falls back to 캐주얼 if missing."""
     base = STYLE_VARIATIONS.get(style) or STYLE_VARIATIONS["캐주얼"]
     return base["day"], base["night"]
 
@@ -737,6 +739,37 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
 - 코디에는 반드시: 핵심 아이템, 추천 이유(날씨+일정 근거), 캐리어 체크리스트 포함
 - 브랜드/가격 언급 금지(품목 중심)
 - 한국어
+
+{{
+  "destination_card": {{
+    "destination": "도시/국가",
+    "dday": "D-3",
+    "weather_one_liner": "한 줄 날씨"
+  }},
+  "calendar_outfits": [
+    {{
+      "date": "YYYY-MM-DD",
+      "day_style": "그날 스타일",
+      "day_summary": "그날 일정 핵심 요약(1줄)",
+      "day_outfits": [
+        {{
+          "title": "코디 이름",
+          "covers_slots": ["오전","오후"],
+          "items": {{
+            "top": ["..."],
+            "bottom": ["..."],
+            "outer": ["..."],
+            "shoes": ["..."],
+            "accessories": ["..."]
+          }},
+          "key_items": ["핵심 3~5개"],
+          "why_recommended": "추천 이유(2~4문장)",
+          "packing_checklist": ["체크리스트 8~14개"]
+        }}
+      ]
+    }}
+  ]
+}}
 """.strip()
 
 def _plan_summary(rows_for_date: list[dict]) -> str:
@@ -757,9 +790,11 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
         style = day_styles.get(d, "러블리")
         day_vars, night_vars = pick_variations(style)
 
+        # 일정에 '저녁' 텍스트가 조금이라도 있으면 night 룩 우선, 아니면 day 룩 2개
         has_evening_plan = any((x["시간대"] == "저녁" and x["일정"] != "—") for x in rows)
 
         chosen = []
+        # 활동용 2개 중 1개 + 저녁용 2개 중 1개 (항상 2개 제공)
         chosen.append(day_vars[0])
         chosen.append(night_vars[0] if has_evening_plan else day_vars[1])
 
@@ -804,13 +839,14 @@ def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherIn
             else:
                 raise
 
-        # 보강: 최소 2개
+        # ✅ 보강: AI가 1개만 주면(혹시) 최소 2개로 채우기
         for day in data.get("calendar_outfits", []):
             outfits = day.get("day_outfits") or []
             if len(outfits) < 2:
                 d = day.get("date")
                 style = day.get("day_style") or day_styles.get(d, "러블리")
                 day_vars, night_vars = pick_variations(style)
+                # 부족분 채우기
                 while len(outfits) < 2:
                     outfits.append({
                         "title": night_vars[1]["title"],
@@ -829,7 +865,7 @@ def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherIn
 
 
 # =============================
-# Links + Shopping
+# Links (Google/Pinterest + Shopping links)
 # =============================
 def inspiration_links(destination: str, style_pref: str):
     st.subheader("🔎 참고 링크")
@@ -921,6 +957,13 @@ with c2:
     gender = st.selectbox("🙋 성별", ["여성", "남성", "기타/선호없음"])
     age_group = st.selectbox("🎂 나이대", ["10대", "20대", "30대", "40대", "50대+"])
 
+# UI 톤: 자동(첫날 스타일) or 고정
+ui_theme_mode = st.selectbox("🎨 UI 톤", ["자동(첫날 스타일)", "고정 선택"])
+if ui_theme_mode == "고정 선택":
+    ui_theme_style = st.selectbox("✨ UI 톤 스타일", STYLE_OPTIONS, index=STYLE_OPTIONS.index("러블리"))
+else:
+    ui_theme_style = None
+
 user = {
     "gender": gender,
     "age_group": age_group,
@@ -958,9 +1001,10 @@ for i, tab in enumerate(day_tabs):
                 )
                 plans.append({"date": dkey, "slot": slot, "plan": txt})
 
-# ✅ UI톤 선택 UI 제거: 첫날 스타일로 자동 적용
+# 테마 적용(대표 스타일)
 first_day_key = start_date.isoformat()
-applied_theme_style = day_styles.get(first_day_key, "러블리")
+auto_theme_style = day_styles.get(first_day_key, "러블리")
+applied_theme_style = ui_theme_style if (ui_theme_mode == "고정 선택" and ui_theme_style) else auto_theme_style
 inject_css(STYLE_THEME.get(applied_theme_style, STYLE_THEME["러블리"]))
 
 calendar_rows = build_calendar_rows(start_date, days, plans, day_styles)
@@ -974,7 +1018,7 @@ if btn:
         st.stop()
 
     with st.spinner("✨ 코디 준비 중..."):
-        # geocode
+        # 1) geocode
         geo = None
         try:
             geo = geocode_city(destination_input.strip())
@@ -990,7 +1034,7 @@ if btn:
         lat = float(geo["latitude"])
         lon = float(geo["longitude"])
 
-        # weather
+        # 2) weather
         try:
             wx = fetch_weather_one_liner(lat, lon, start_date)
         except Exception:
@@ -998,12 +1042,13 @@ if btn:
 
         weather = WeatherInfo(city=city, country=country, lat=lat, lon=lon, summary=wx)
 
-        # AI / fallback
+        # 3) AI / fallback
         if use_ai:
             result, used_fallback = generate_with_ai_or_fallback(openai_key, user, weather, start_date, days, calendar_rows, day_styles)
         else:
             result, used_fallback = mock_generate_calendar(user, weather, start_date, days, calendar_rows, day_styles), True
 
+    # Render
     dest_card = result.get("destination_card", {})
     dest_card.setdefault("destination", f"{city}, {country}".strip().strip(","))
     dest_card.setdefault("dday", dday_string(start_date))
@@ -1031,6 +1076,7 @@ if btn:
                 st.caption(day["day_summary"])
 
             outfits = day.get("day_outfits", []) or []
+            # 혹시 빈 경우 안전장치
             if len(outfits) == 0:
                 st.info("코디가 비어 있어요. 다시 시도해줘!")
                 continue
