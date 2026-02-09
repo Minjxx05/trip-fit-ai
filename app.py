@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from dateutil.relativedelta import relativedelta
 
 import requests
@@ -9,7 +9,7 @@ from openai import OpenAI
 
 
 # -----------------------------
-# Basics
+# Helpers
 # -----------------------------
 def today_kr() -> date:
     return date.today()
@@ -82,14 +82,11 @@ def fetch_weather_one_liner(lat: float, lon: float, target: date) -> str:
 
 
 # -----------------------------
-# Calendar itinerary helpers
+# Calendar itinerary
 # -----------------------------
 SLOTS = ["오전", "오후", "저녁"]
 
 def build_calendar_rows(start_date: date, days: int, plans: list[dict]) -> list[dict]:
-    """
-    plans: [{ "date": "YYYY-MM-DD", "slot": "오전/오후/저녁", "plan": "..." }, ...]
-    """
     rows = []
     for i in range(days):
         d = start_date + relativedelta(days=i)
@@ -97,7 +94,7 @@ def build_calendar_rows(start_date: date, days: int, plans: list[dict]) -> list[
             plan_text = ""
             for p in plans:
                 if p["date"] == d.isoformat() and p["slot"] == slot:
-                    plan_text = p["plan"].strip()
+                    plan_text = (p["plan"] or "").strip()
                     break
             rows.append({
                 "날짜": d.isoformat(),
@@ -108,7 +105,7 @@ def build_calendar_rows(start_date: date, days: int, plans: list[dict]) -> list[
 
 
 # -----------------------------
-# AI / Mock
+# AI Prompt
 # -----------------------------
 def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> str:
     calendar_json = json.dumps(calendar_rows, ensure_ascii=False)
@@ -135,8 +132,10 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
 
 [출력 규칙: 반드시 JSON만]
 - 날짜별로 코디를 묶어서 제공
-- 각 날짜마다 "day_outfits"는 최소 1개, 최대 2개(오전/오후/저녁 일정에 커버되도록)
+- 각 날짜마다 day_outfits는 최소 1개, 최대 2개(오전/오후/저녁 일정 커버)
 - 코디에는 반드시: 핵심 아이템, 추천 이유(날씨+일정 근거), 캐리어 체크리스트 포함
+- 브랜드/가격 언급 금지(품목 중심)
+- 한국어
 
 {{
   "destination_card": {{
@@ -151,7 +150,7 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
       "day_outfits": [
         {{
           "title": "코디 이름",
-          "covers_slots": ["오전","오후"], 
+          "covers_slots": ["오전","오후"],
           "items": {{
             "top": ["..."],
             "bottom": ["..."],
@@ -167,12 +166,12 @@ def build_prompt(user: dict, weather: WeatherInfo, start_date: date, days: int, 
     }}
   ]
 }}
-
-[제약]
-- 한국어
-- 브랜드/가격 언급 금지(품목 중심)
 """.strip()
 
+
+# -----------------------------
+# Mock (fallback)
+# -----------------------------
 def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> dict:
     dest = f"{weather.city}, {weather.country}".strip().strip(",")
     dest_card = {
@@ -181,7 +180,6 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
         "weather_one_liner": weather.summary,
     }
 
-    # 날짜별 일정 요약/코디(더미)
     by_date = {}
     for r in calendar_rows:
         by_date.setdefault(r["날짜"], []).append(r)
@@ -196,7 +194,7 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
             "day_summary": summary[:80] + ("…" if len(summary) > 80 else ""),
             "day_outfits": [
                 {
-                    "title": f'{user["style_pref"]} 데이룩',
+                    "title": f'👟 {user["style_pref"]} 데이룩',
                     "covers_slots": ["오전", "오후"],
                     "items": {
                         "top": ["베이직 상의", f'{user["style_pref"]} 포인트 톱'],
@@ -210,7 +208,7 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
                     "packing_checklist": ["상/하의 여벌", "양말", "보조배터리", "선크림", "물티슈", "우산(선택)", "상비약", "에코백"],
                 },
                 {
-                    "title": "저녁 무드룩",
+                    "title": "🌙 저녁 무드룩",
                     "covers_slots": ["저녁"],
                     "items": {
                         "top": ["니트/셔츠(단정)"],
@@ -228,12 +226,16 @@ def mock_generate_calendar(user: dict, weather: WeatherInfo, start_date: date, d
 
     return {"destination_card": dest_card, "calendar_outfits": calendar_outfits}
 
-def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> tuple[dict, str | None]:
+
+# -----------------------------
+# AI call (fallback, no error shown)
+# -----------------------------
+def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherInfo, start_date: date, days: int, calendar_rows: list[dict]) -> tuple[dict, bool]:
     """
-    returns: (result_json, error_message_or_none)
+    returns: (result_json, used_fallback_bool)
     """
     if not openai_key:
-        return mock_generate_calendar(user, weather, start_date, days, calendar_rows), "API Key 없음 → 더미 결과"
+        return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
 
     try:
         client = OpenAI(api_key=openai_key)
@@ -246,18 +248,16 @@ def generate_with_ai_or_fallback(openai_key: str, user: dict, weather: WeatherIn
         text = (resp.output_text or "").strip()
 
         try:
-            return json.loads(text), None
+            return json.loads(text), False
         except json.JSONDecodeError:
-            # JSON 부분만 추출 시도
             s = text.find("{")
             e = text.rfind("}")
             if s != -1 and e != -1 and e > s:
-                return json.loads(text[s:e+1]), None
+                return json.loads(text[s:e+1]), False
             raise
 
-    except Exception as e:
-        # 핵심: 앱이 죽지 않게 무조건 fallback
-        return mock_generate_calendar(user, weather, start_date, days, calendar_rows), str(e)
+    except Exception:
+        return mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
 
 
 # -----------------------------
@@ -292,13 +292,15 @@ def render_destination_card(card: dict):
     )
 
 def render_outfit(outfit: dict, key_prefix: str):
-    st.markdown(f"**{outfit.get('title','')}**")
-    st.caption("커버 일정: " + " · ".join(outfit.get("covers_slots", [])))
+    st.markdown(f"### {outfit.get('title','')}")
+    slots = outfit.get("covers_slots", [])
+    if slots:
+        st.caption("🗓️ " + " · ".join(slots))
 
     items = outfit.get("items", {})
     cols = st.columns(2)
     with cols[0]:
-        st.write("착장")
+        st.write("🧩 착장")
         for cat in ["top", "bottom", "outer", "shoes", "accessories"]:
             vals = [v for v in (items.get(cat, []) or []) if v]
             if vals:
@@ -307,23 +309,31 @@ def render_outfit(outfit: dict, key_prefix: str):
                     st.markdown(f"<span class='item-chip'>{v}</span>", unsafe_allow_html=True)
 
     with cols[1]:
-        st.write("핵심")
+        st.write("⭐ 핵심")
         for v in outfit.get("key_items", []):
             st.markdown(f"<span class='item-chip'>{v}</span>", unsafe_allow_html=True)
 
-    st.write("이유")
+    st.write("💬 이유")
     st.write(outfit.get("why_recommended", ""))
 
-    st.write("체크리스트")
+    st.write("✅ 체크리스트")
     for i, item in enumerate(outfit.get("packing_checklist", [])[:18]):
         st.checkbox(item, key=f"{key_prefix}_{i}")
 
+def moodboard_images(destination: str, style_pref: str):
+    st.subheader("🖼️ 무드보드 (레퍼런스)")
+    q = f"{destination} {style_pref} outfit street"
+    cols = st.columns(3)
+    for i in range(6):
+        url = f"https://source.unsplash.com/600x800/?{requests.utils.quote(q)}&sig={i}"
+        with cols[i % 3]:
+            st.image(url, use_container_width=True)
+    st.caption("레퍼런스 이미지(공개 이미지 기반).")
+
 def moodboard_links(destination: str, style_pref: str):
-    st.divider()
-    st.subheader("무드 보드")
     q = f"{destination} {style_pref} ootd"
-    st.link_button("Google 이미지", f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(q)}")
-    st.link_button("Pinterest", f"https://www.pinterest.com/search/pins/?q={requests.utils.quote(q)}")
+    st.link_button("🔎 Google 이미지", f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(q)}")
+    st.link_button("📌 Pinterest", f"https://www.pinterest.com/search/pins/?q={requests.utils.quote(q)}")
 
 
 # -----------------------------
@@ -332,26 +342,26 @@ def moodboard_links(destination: str, style_pref: str):
 st.set_page_config(page_title="Tripfit", page_icon="🧳", layout="wide")
 inject_css()
 
-st.title("Tripfit")
+st.title("🧳 Tripfit ✨")
 
 with st.sidebar:
-    st.subheader("설정")
-    use_ai = st.toggle("AI로 코디 생성", value=True)
-    openai_key = st.text_input("OPENAI API KEY", type="password", value=safe_get_secret("OPENAI_API_KEY"))
+    st.subheader("⚙️ 설정")
+    use_ai = st.toggle("🤖 AI 코디", value=True)
+    openai_key = st.text_input("🔑 OpenAI API Key", type="password", value=safe_get_secret("OPENAI_API_KEY"))
 
 st.divider()
 
 c1, c2 = st.columns([1, 1])
 
 with c1:
-    destination_input = st.text_input("목적지", placeholder="예: 파리, 도쿄, 서울")
-    start_date = st.date_input("여행 시작일", value=today_kr() + relativedelta(days=7))
-    days = st.slider("여행 기간(일)", min_value=1, max_value=10, value=3)
+    destination_input = st.text_input("📍 목적지", placeholder="예: 파리, 도쿄, 서울")
+    start_date = st.date_input("🗓️ 시작일", value=today_kr() + relativedelta(days=7))
+    days = st.slider("⏳ 여행 기간(일)", min_value=1, max_value=10, value=3)
 
 with c2:
-    gender = st.selectbox("성별", ["여성", "남성", "기타/선호없음"])
-    age_group = st.selectbox("나이대", ["10대", "20대", "30대", "40대", "50대+"])
-    style_pref = st.selectbox("스타일", ["미니멀", "빈티지", "스트릿", "캐주얼", "클래식", "러블리", "고프코어", "시티보이/시티걸"])
+    gender = st.selectbox("🙋 성별", ["여성", "남성", "기타/선호없음"])
+    age_group = st.selectbox("🎂 나이대", ["10대", "20대", "30대", "40대", "50대+"])
+    style_pref = st.selectbox("👗 스타일", ["미니멀", "빈티지", "스트릿", "캐주얼", "클래식", "러블리", "고프코어", "시티보이/시티걸"])
 
 user = {
     "gender": gender,
@@ -360,11 +370,9 @@ user = {
     "season": season_from_month(start_date.month),
 }
 
-st.subheader("일정 입력")
-
-# 일정 입력(캘린더 느낌: 날짜별 탭 + 오전/오후/저녁)
+st.subheader("🗓️ 일정")
 plans = []
-day_tabs = st.tabs([(start_date + relativedelta(days=i)).strftime("%m/%d") for i in range(days)])
+day_tabs = st.tabs([(start_date + relativedelta(days=i)).strftime("📅 %m/%d") for i in range(days)])
 
 for i, tab in enumerate(day_tabs):
     d = start_date + relativedelta(days=i)
@@ -372,23 +380,26 @@ for i, tab in enumerate(day_tabs):
         cols = st.columns(3)
         for j, slot in enumerate(SLOTS):
             with cols[j]:
-                txt = st.text_area(slot, key=f"plan_{d.isoformat()}_{slot}", height=90, placeholder="예: 박물관 / 카페 / 쇼핑")
+                txt = st.text_area(
+                    f"🧩 {slot}",
+                    key=f"plan_{d.isoformat()}_{slot}",
+                    height=90,
+                    placeholder="예: 박물관 / 카페 / 쇼핑"
+                )
                 plans.append({"date": d.isoformat(), "slot": slot, "plan": txt})
 
 calendar_rows = build_calendar_rows(start_date, days, plans)
 
 st.divider()
-
-btn = st.button("코디 생성", use_container_width=True)
+btn = st.button("🪄 코디 만들기", use_container_width=True)
 
 if btn:
     if not destination_input.strip():
-        st.error("목적지를 입력해줘.")
+        st.error("📍 목적지를 입력해줘!")
         st.stop()
 
-    # 로딩 UX: 스피너 + 단계별 메시지 최소
-    with st.spinner("준비 중..."):
-        # 1) 지오코딩
+    with st.spinner("✨ 코디 준비 중..."):
+        # 1) Geocode
         geo = None
         try:
             geo = geocode_city(destination_input.strip())
@@ -396,7 +407,7 @@ if btn:
             geo = None
 
         if not geo:
-            st.error("목적지를 찾지 못했어. 도시명을 조금 더 정확히 적어줘.")
+            st.error("😢 도시를 찾지 못했어. 도시명을 더 정확히 적어줘!")
             st.stop()
 
         city = geo.get("name", destination_input.strip())
@@ -404,27 +415,21 @@ if btn:
         lat = float(geo["latitude"])
         lon = float(geo["longitude"])
 
-        # 2) 날씨
+        # 2) Weather
         try:
             wx = fetch_weather_one_liner(lat, lon, start_date)
         except Exception:
             wx = "날씨 정보 불러오기 실패(대신 진행)"
 
-        weather = WeatherInfo(
-            city=city,
-            country=country,
-            lat=lat,
-            lon=lon,
-            summary=wx
-        )
+        weather = WeatherInfo(city=city, country=country, lat=lat, lon=lon, summary=wx)
 
-        # 3) AI or fallback
+        # 3) AI / Fallback
         if use_ai:
-            result, err = generate_with_ai_or_fallback(openai_key, user, weather, start_date, days, calendar_rows)
+            result, used_fallback = generate_with_ai_or_fallback(openai_key, user, weather, start_date, days, calendar_rows)
         else:
-            result, err = mock_generate_calendar(user, weather, start_date, days, calendar_rows), "AI 비활성화 → 더미 결과"
+            result, used_fallback = mock_generate_calendar(user, weather, start_date, days, calendar_rows), True
 
-    # 결과 렌더
+    # Render
     dest_card = result.get("destination_card", {})
     dest_card.setdefault("destination", f"{city}, {country}".strip().strip(","))
     dest_card.setdefault("dday", dday_string(start_date))
@@ -432,27 +437,27 @@ if btn:
 
     render_destination_card(dest_card)
 
-    # 에러는 “조용히” 안내 + 자세한 건 접기
-    if err:
-        st.warning("AI 생성이 안 돼서 더미 결과로 표시했어.")
-        with st.expander("자세한 오류 보기"):
-            st.code(err)
+    if used_fallback:
+        st.info("🙂 샘플 코디로 보여줄게요!")
 
-    st.subheader("일정 캘린더")
+    st.subheader("🗂️ 일정표")
     st.dataframe(calendar_rows, use_container_width=True, hide_index=True)
 
-    st.subheader("날짜별 코디")
+    st.subheader("👗 날짜별 코디")
     cal = result.get("calendar_outfits", [])
     if not cal:
-        st.info("코디 결과가 비어 있어. 다시 시도해줘.")
+        st.info("다시 시도해줘!")
         st.stop()
 
-    tabs = st.tabs([x["date"] for x in cal])
+    tabs = st.tabs([f"📅 {x['date']}" for x in cal])
     for t, day in zip(tabs, cal):
         with t:
-            st.caption(day.get("day_summary", ""))
+            if day.get("day_summary"):
+                st.caption(day["day_summary"])
             for k, outfit in enumerate(day.get("day_outfits", [])):
                 st.divider()
                 render_outfit(outfit, key_prefix=f"{day['date']}_{k}")
 
+    moodboard_images(dest_card.get("destination", destination_input), style_pref)
     moodboard_links(dest_card.get("destination", destination_input), style_pref)
+
